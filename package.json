@@ -1,0 +1,24 @@
+{
+  "name": "Vue3Reissue",
+  "private": true,
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.js reactivity -f esm",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.20.0",
+  "dependencies": {
+    "vue": "^3.5.25"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.1",
+    "minimist": "^1.2.8",
+    "typescript": "^5.9.3"
+  }
+}
