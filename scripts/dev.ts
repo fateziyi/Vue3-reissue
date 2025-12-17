@@ -1,6 +1,4 @@
-// 这个文件会帮我们打包packages下的模块，最终打包出js文件
 
-// node dev.js (要打包的名字 -f 打包的格式) === argv
 import minimist from 'minimist'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -15,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url) // 获取当前文件的目录
 const __dirname = dirname(__filename)
 const require = createRequire(import.meta.url)
 const target = args._[0] || 'reactivity' // 要打包的模块名称
-const format = args.f || 'iife' // 打包后的模块化规范
+const format = (args.f || 'iife') as esbuild.Format // 打包后的模块化规范
 
 // 入口文件 根据命令行提供的路径进行解析
 const entry = resolve(__dirname, `../packages/${target}/src/index.ts`)
@@ -32,5 +30,5 @@ esbuild.context({
   globalName: pkg.buildOptions?.name, // 全局变量名
 }).then((ctx) => {
   console.log(`${target} done`)
-  return ctx.rebuild() // 监控入口文件持续进行打包处理
+  return ctx.watch() // 监控入口文件持续进行打包处理
 })
