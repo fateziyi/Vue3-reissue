@@ -30,13 +30,16 @@ class RefImpl {
   }
 }
 
-function trackRefValue(ref) {
+export function trackRefValue(ref) {
   if (activeEffect) { // 如果有effect，则进行依赖收集
-    trackEffects(activeEffect, ref.dep = createDep(() => ref.dep = undefined, 'undefined'))
+    trackEffects(
+      activeEffect,
+      (ref.dep = ref.dep || createDep(() => ref.dep = undefined, 'undefined'))
+    )
   }
 }
 
-function triggerRefValue(ref) {
+export function triggerRefValue(ref) {
   let dep = ref.dep
   if (dep) {
     triggerEffects(dep) // 触发依赖更新
@@ -84,4 +87,8 @@ export function proxyRefs(objectWithRef) {
       }
     }
   })
+}
+
+export function isRef(value) {
+  return value && value.__v_isRef
 }

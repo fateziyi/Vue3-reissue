@@ -6,7 +6,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx scripts/dev.ts reactivity -f esm",
+    "dev": "tsx scripts/dev.ts runtime-dom -f esm",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
