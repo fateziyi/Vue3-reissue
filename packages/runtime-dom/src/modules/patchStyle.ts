@@ -5,8 +5,10 @@ export default function patchStyle(el, prevValue, nextValue) {
   }
   if (prevValue) {
     for (let key in prevValue) { // 删除老的样式
-      if (nextValue[key] == null) {
-        style[key] = null
+      if (nextValue) {
+        if (nextValue[key] == null) {
+          style[key] = null
+        }
       }
     }
   }
