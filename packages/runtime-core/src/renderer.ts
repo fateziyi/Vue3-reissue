@@ -1,5 +1,7 @@
 import { ShapeFlags } from "@vue/shared"
-import { isSameVnode } from "./createVnode"
+import { isSameVnode, Text, Fragment } from "./createVnode"
+import getSequence from "./seq"
+import { reactive, ReactiveEffect } from "@vue/reactivity"
 
 export function createRenderer(rendererOptions) {
   // core中不关心如何渲染
@@ -64,6 +66,7 @@ export function createRenderer(rendererOptions) {
     }
   }
 
+  // 全量diff（递归diff）
   const patchKeyedChildren = (c1, c2, el) => { // 比较两个儿子的差异，来更新el
     // 先从头比对，再从尾比对，减少比对范围，如果有多余直接新增即可 
     let i = 0 // 开始比对的索引 
@@ -114,6 +117,11 @@ export function createRenderer(rendererOptions) {
       let s1 = i
       let s2 = i
       const keyToNewIndexMap = new Map() // 做一个映射表用于快速查找，看老的是否在新的里面还有，没有就删除，有的话就更新
+      // 插入元素过程中可能新的元素多，需要创建
+      let toBePatched = e2 - s2 + 1 // 需要倒序插入的个数
+      let newIndexToOldIndexMap = new Array(toBePatched).fill(0)
+      // 根据最长递增子序列求出对应的索引结果
+      // 根据新的节点，找到对应老的位置
       for (let i = s2; i <= e2; i++) {
         const vnode = c2[i]
         keyToNewIndexMap.set(vnode.key, i)
@@ -126,12 +134,14 @@ export function createRenderer(rendererOptions) {
           unmount(vnode)
         } else {
           // 说明老的节点在新的节点中还有，需要更新
+          // i可能有0的情况
+          newIndexToOldIndexMap[newIndex - s2] = i + 1
           patch(vnode, c2[newIndex], el)
         }
       }
+      let increasingSeq = getSequence(newIndexToOldIndexMap)
+      let j = increasingSeq.length - 1 // 索引
       // 调整顺序
-      // 插入元素过程中可能新的元素多，需要创建
-      let toBePatched = e2 - s2 + 1 // 需要倒序插入的个数
       for (let i = toBePatched - 1; i >= 0; i--) {
         let newIndex = s2 + i // 下一个元素作为参照物进行插入
         let anchor = c2[newIndex + 1]?.el
@@ -140,8 +150,12 @@ export function createRenderer(rendererOptions) {
           // 新增的元素，需要插入到参照物的前面
           patch(null, vnode, el, anchor) // 创建h插入
         } else {
-          // 说明是移动操作，需要移动到参照物的前面
-          hostInsert(vnode.el, el, anchor) // 倒序插入
+          if (i == increasingSeq[j]) {
+            j-- // diff算法的优化
+          } else {
+            // 说明是移动操作，需要移动到参照物的前面
+            hostInsert(vnode.el, el, anchor) // 倒序插入
+          }
         }
       }
     }
@@ -195,6 +209,75 @@ export function createRenderer(rendererOptions) {
     patchChildren(n1, n2, el)
   }
 
+  const processText = (n1, n2, container) => {
+    if (n1 == null) {
+      // 1. 虚拟节点要关联真实节点
+      // 2. 将节点插入到页面中
+      hostInsert(n2.el = hostCreateText(n2.children), container)
+    } else {
+      const el = (n2.el = n1.el)
+      // 1. 判断文本内容是否相同
+      if (n1.children !== n2.children) {
+        // 2. 如果内容不同，则更新内容
+        hostSetText(el, n2.children)
+      }
+    }
+  }
+
+  const processFragment = (n1, n2, container) => {
+    if (n1 == null) {
+      mountChildren(n2.children, container)
+    } else {
+      patchChildren(n1, n2, container)
+    }
+  }
+
+  const mountComponent = (n2, container, anchor) => {
+    // 组件可以基于自己的状态重新渲染
+    const { data = () => { }, render } = n2.type
+
+    const state = reactive(data()) // 组件的状态
+    const instance = {
+      state, // 组件的状态
+      vnode: n2, // 虚拟节点
+      subTree: null, // 组件的子树
+      isMounted: false, // 组件是否挂载
+      update: null // 组件的更新函数
+    }
+    const componentUpdateFn = () => {
+      // 要区分是第一次还是之后渲染
+      if (!instance.isMounted) {
+        const subTree = render.call(state, state)
+        patch(null, subTree, container, anchor)
+        instance.isMounted = true
+        instance.subTree = subTree
+      } else {
+        // 基于状态的组件更新
+        const subTree = render.call(state, state)
+        patch(instance.subTree, subTree, container, anchor)
+        instance.subTree = subTree
+      }
+    }
+
+    const effect = new ReactiveEffect(componentUpdateFn, () => update())
+    const update = (instance.update = () => effect.run())
+    update()
+  }
+
+  const patchComponent = (n1, n2) => {
+  }
+
+  const processComponent = (n1, n2, container, anchor) => {
+    if (n1 == null) {
+      // 1. 虚拟节点要关联真实节点
+      // 2. 将节点插入到页面中
+      mountComponent(n2, container, anchor)
+    } else {
+      // 组件更新
+      patchComponent(n1, n2)
+    }
+  }
+
   // 渲染和更新都走这里
   const patch = (n1, n2, container, anchor = null) => {
     if (n1 === n2) { // 两次渲染同一个元素，直接跳过
@@ -206,10 +289,30 @@ export function createRenderer(rendererOptions) {
       unmount(n1)
       n1 = null // 执行后续n2的初始化
     }
-    processElement(n1, n2, container, anchor) // 对元素处理
+    const { type, shapeFlag } = n2
+    switch (type) {
+      case Text:
+        processText(n1, n2, container)
+        break
+      case Fragment:
+        processFragment(n1, n2, container)
+        break
+      default:
+        if (shapeFlag & ShapeFlags.ELEMENT) { // 元素
+          processElement(n1, n2, container, anchor)
+        } else if (shapeFlag & ShapeFlags.COMPONENT) { // 组件
+          processComponent(n1, n2, container, anchor)
+        }
+    }
   }
 
-  const unmount = (vnode) => hostRemove(vnode.el)
+  const unmount = (vnode) => {
+    if (vnode.type === Fragment) {
+      unmountChildren(vnode.children)
+    } else {
+      hostRemove(vnode.el)
+    }
+  }
 
   // 多次调用render会进行虚拟节点的比较，再进行更新
   const render = (vnode, container) => {
@@ -218,10 +321,12 @@ export function createRenderer(rendererOptions) {
       if (container._vnode) {
         unmount(container._vnode)
       }
+    } else {
+      // 将虚拟节点变成真实节点进行渲染
+      patch(container._vnode || null, vnode, container)
+      container._vnode = vnode
     }
-    // 将虚拟节点变成真实节点进行渲染
-    patch(container._vnode || null, vnode, container)
-    container._vnode = vnode
   }
   return { render }
 }
+
