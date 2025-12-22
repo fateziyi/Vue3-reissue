@@ -1,7 +1,9 @@
-import { ShapeFlags } from "@vue/shared"
+import { hasOwn, ShapeFlags } from "@vue/shared"
 import { isSameVnode, Text, Fragment } from "./createVnode"
 import getSequence from "./seq"
 import { reactive, ReactiveEffect } from "@vue/reactivity"
+import { queueJob } from "./scheduler"
+import { createComponentInstance, setupComponent } from "./component"
 
 export function createRenderer(rendererOptions) {
   // core中不关心如何渲染
@@ -232,39 +234,91 @@ export function createRenderer(rendererOptions) {
     }
   }
 
-  const mountComponent = (n2, container, anchor) => {
-    // 组件可以基于自己的状态重新渲染
-    const { data = () => { }, render } = n2.type
+  const updateComponentPreRender = (instance, next) => {
+    instance.next = null
+    instance.vnode = next
+    updateProps(instance, instance.props, next.props)
+  }
 
-    const state = reactive(data()) // 组件的状态
-    const instance = {
-      state, // 组件的状态
-      vnode: n2, // 虚拟节点
-      subTree: null, // 组件的子树
-      isMounted: false, // 组件是否挂载
-      update: null // 组件的更新函数
-    }
+  function setupRenderEffect(instance, container, anchor) {
+    const { render } = instance
     const componentUpdateFn = () => {
       // 要区分是第一次还是之后渲染
       if (!instance.isMounted) {
-        const subTree = render.call(state, state)
+        const subTree = render.call(instance.proxy, instance.proxy)
         patch(null, subTree, container, anchor)
         instance.isMounted = true
         instance.subTree = subTree
       } else {
         // 基于状态的组件更新
-        const subTree = render.call(state, state)
+        const { next } = instance
+        if (next) {
+          // 更新属性和插槽
+          updateComponentPreRender(instance, next)
+        }
+        const subTree = render.call(instance.proxy, instance.proxy)
         patch(instance.subTree, subTree, container, anchor)
         instance.subTree = subTree
       }
     }
 
-    const effect = new ReactiveEffect(componentUpdateFn, () => update())
+    const effect = new ReactiveEffect(componentUpdateFn, () => queueJob(update))
     const update = (instance.update = () => effect.run())
     update()
   }
 
-  const patchComponent = (n1, n2) => {
+  const mountComponent = (vnode, container, anchor) => {
+    const instance = (vnode.component = createComponentInstance(vnode))
+    setupComponent(instance) // 给实例赋值属性
+    // 组件可以基于自己的状态重新渲染
+    // 根据propsOptions区分出props和attrs
+    setupRenderEffect(instance, container, anchor) // 创建一个effect，用于组件更新
+  }
+
+  const hasPropsChange = (prevProps, nextProps) => {
+    let nKeys = Object.keys(nextProps)
+    let pKeys = Object.keys(prevProps)
+    if (nKeys.length !== pKeys.length) {
+      return true
+    }
+    for (let i = 0; i < nKeys.length; i++) {
+      const key = nKeys[i]
+      if (nextProps[key] !== prevProps[key]) {
+        return true
+      }
+    }
+    return false
+  }
+
+  const updateProps = (instance, prevProps, nextProps) => {
+    if (hasPropsChange(prevProps, nextProps)) { // 属性是否有变化
+      for (let key in nextProps) { // 新的属性覆盖旧的属性
+        instance.props[key] = nextProps[key]
+      }
+      for (let key in instance.props) { // 旧的属性有，新的没有，则删除
+        if (!(key in nextProps)) {
+          delete instance.props[key]
+        }
+      }
+    }
+  }
+
+  const shouldUpdateComponent = (n1, n2) => {
+    const { props: prevProps, children: prevChildren } = n1
+    const { props: nextProps, children: nextChildren } = n2
+    if (prevChildren || nextChildren) { // 1. 新老子节点都存在
+      return true
+    }
+    if (prevProps === nextProps) return false
+    return hasPropsChange(prevProps, nextProps) // 如果属性不一致，则更新
+  }
+
+  const updateComponent = (n1, n2) => {
+    const instance = (n2.component = n1.component) // 复用组件实例
+    if (shouldUpdateComponent(n1, n2)) {
+      instance.next = n2 // 如果调用update有next属性，说明是属性更新或插槽更新
+      instance.update() // 统一更新逻辑
+    }
   }
 
   const processComponent = (n1, n2, container, anchor) => {
@@ -274,7 +328,7 @@ export function createRenderer(rendererOptions) {
       mountComponent(n2, container, anchor)
     } else {
       // 组件更新
-      patchComponent(n1, n2)
+      updateComponent(n1, n2)
     }
   }
 
