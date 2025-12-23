@@ -383,4 +383,3 @@ export function createRenderer(rendererOptions) {
   }
   return { render }
 }
-
