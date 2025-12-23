@@ -1,7 +1,7 @@
 import { proxyRefs, reactive } from "@vue/reactivity"
 import { hasOwn, isFunction, ShapeFlags } from "@vue/shared"
 
-export function createComponentInstance(vnode) {
+export function createComponentInstance(vnode, parent) {
   const instance = {
     data: null, // 组件的状态
     vnode, // 虚拟节点
@@ -15,6 +15,9 @@ export function createComponentInstance(vnode) {
     component: null, // 组件的实例
     proxy: null, // 组件的代理对象
     setupState: {}, // 组件的状态
+    exposed: null, // 组件暴露的属性
+    parent, // 组件的父实例
+    provides: parent ? parent.provides : Object.create(null), // 父实例的provides
   }
   return instance
 }
@@ -91,9 +94,19 @@ export function setupComponent(instance) {
   if (setup) {
     const setupContext = {
       slots: instance.slots,
-      attrs: instance.attrs
+      attrs: instance.attrs,
+      expose(value) {
+        instance.exposed = value
+      },
+      emit(event, ...payload) {
+        const eventName = `on${event[0].toUpperCase() + event.slice(1)}`
+        const handler = instance.vnode.props[eventName]
+        handler && handler(...payload)
+      }
     }
+    setCurrentInstance(instance)
     const setupResult = setup(instance.props, setupContext)
+    unsetCurrentInstance()
     if (isFunction(setupResult)) {
       instance.render = setupResult
     } else {
@@ -111,4 +124,18 @@ export function setupComponent(instance) {
     // 默认使用render
     instance.render = render
   }
+}
+
+export let currentInstance = null
+
+export function getCurrentInstance() {
+  return currentInstance
+}
+
+export function setCurrentInstance(instance) {
+  currentInstance = instance
+}
+
+export function unsetCurrentInstance() {
+  currentInstance = null
 }
