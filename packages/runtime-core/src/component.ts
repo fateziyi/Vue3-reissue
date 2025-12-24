@@ -18,6 +18,7 @@ export function createComponentInstance(vnode, parent) {
     exposed: null, // 组件暴露的属性
     parent, // 组件的父实例
     provides: parent ? parent.provides : Object.create(null), // 父实例的provides
+    ctx: {} as any, // 如果是keepalive组件，就将DOMAPI放入到这个属性上
   }
   return instance
 }
