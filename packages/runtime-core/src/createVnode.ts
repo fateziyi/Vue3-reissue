@@ -11,7 +11,7 @@ export function isSameVnode(n1, n2) {
   return n1.type === n2.type && n1.key === n2.key
 }
 
-export function createVnode(type, props, children?) {
+export function createVnode(type, props, children?, patchFlag?) {
   const shapeFlag = isString(type)
     ? ShapeFlags.ELEMENT // 元素
     : isTeleport(type)
@@ -30,7 +30,13 @@ export function createVnode(type, props, children?) {
     el: null, // 虚拟节点需要对应的真实节点是谁
     shapeFlag,
     ref: props?.ref,
+    patchFlag,
   }
+
+  if (currentBlock && patchFlag > 0) {
+    currentBlock.push(vnode)
+  }
+
   if (children) {
     if (Array.isArray(children)) {
       vnode.shapeFlag |= ShapeFlags.ARRAY_CHILDREN
@@ -43,3 +49,36 @@ export function createVnode(type, props, children?) {
   }
   return vnode
 }
+
+let currentBlock = null
+
+export function openBlock() {
+  currentBlock = [] // 收集动态节点
+}
+
+export function closeBlock() {
+  currentBlock = null
+}
+
+export function setupBlock(vnode) {
+  vnode.dynamicChildren = currentBlock // 当前块的动态节点
+  closeBlock()
+  return vnode
+}
+
+export function createElementBlock(type, props, children, patchFlag?) {
+  const vnode = createVnode(type, props, children, patchFlag)
+  return setupBlock(vnode)
+}
+
+export function toDisplayString(value) {
+  return isString(value)
+    ? value
+    : value == null
+      ? ''
+      : isObject(value)
+        ? JSON.stringify(value)
+        : String(value)
+}
+
+export { createVnode as createElementVNode } 

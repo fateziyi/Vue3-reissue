@@ -6,7 +6,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx scripts/dev.ts runtime-dom -f esm",
+    "dev": "tsx scripts/dev.ts compiler-core -f esm",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -20,8 +20,5 @@
     "minimist": "^1.2.8",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
-  },
-  "dependencies": {
-    "vue": "^3.5.25"
   }
 }

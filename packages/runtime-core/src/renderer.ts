@@ -6,6 +6,7 @@ import { queueJob } from "./scheduler"
 import { createComponentInstance, setupComponent } from "./component"
 import { invokeArray } from "./apiLifeCycle"
 import { isKeepAlive } from "./components/KeepAlive"
+import { PatchFlags } from "packages/shared/src/patchFlags"
 
 export function createRenderer(rendererOptions) {
   // core中不关心如何渲染
@@ -22,18 +23,20 @@ export function createRenderer(rendererOptions) {
   } = rendererOptions
 
   const normalize = (children) => {
-    for (let i = 0; i < children.length; i++) {
-      if (typeof children[i] === 'string' || typeof children[i] === 'number') {
-        children[i] = createVnode(Text, null, String(children[i]))
+    if (Array.isArray(children)) {
+      for (let i = 0; i < children.length; i++) {
+        if (typeof children[i] === 'string' || typeof children[i] === 'number') {
+          children[i] = createVnode(Text, null, String(children[i]))
+        }
       }
     }
     return children
   }
 
-  const mountChildren = (children, container, parentComponent) => {
+  const mountChildren = (children, container, achor, parentComponent) => {
     normalize(children)
     for (let i = 0; i < children.length; i++) {
-      patch(null, children[i], container, parentComponent)
+      patch(null, children[i], container, achor, parentComponent)
     }
   }
   const mountElement = (vnode, container, anchor, parentComponent) => {
@@ -47,7 +50,7 @@ export function createRenderer(rendererOptions) {
     if (shapeFlag & ShapeFlags.TEXT_CHILDREN) {
       hostSetElementText(el, children)
     } else if (shapeFlag & ShapeFlags.ARRAY_CHILDREN) {
-      mountChildren(children, el, parentComponent)
+      mountChildren(children, el, anchor, parentComponent)
     }
     if (transition) {
       transition.beforeEnter(el)
@@ -64,7 +67,7 @@ export function createRenderer(rendererOptions) {
       mountElement(n2, container, anchor, parentComponent)
     } else {
       // 对比更新操作
-      patchElement(n1, n2, container, parentComponent)
+      patchElement(n1, n2, container, anchor, parentComponent)
     }
   }
 
@@ -180,7 +183,7 @@ export function createRenderer(rendererOptions) {
       }
     }
   }
-  const patchChildren = (n1, n2, el, parentComponent) => {
+  const patchChildren = (n1, n2, el, anchor, parentComponent) => {
     // text array null
     const c1 = n1.children
     const c2 = normalize(n2.children)
@@ -213,20 +216,82 @@ export function createRenderer(rendererOptions) {
         }
         if (newShapeFlag & ShapeFlags.ARRAY_CHILDREN) {
           // 老的是文本，新的是数组
-          mountChildren(c2, el, parentComponent)
+          mountChildren(c2, el, anchor, parentComponent)
         }
       }
     }
   }
 
-  const patchElement = (n1, n2, container, parentComponent) => {
+  const patchBlockChildren = (n1, n2, el, anchor, parentComponent) => {
+    for (let i = 0; i < n2.dynamicChildren.length; i++) {
+      patch(n1.dynamicChildren[i], n2.dynamicChildren[i], el, anchor, parentComponent)
+    }
+  }
+
+  const patchElement = (n1, n2, container, anchor, parentComponent) => {
     let el = (n2.el = n1.el) // 对DOM元素的复用
 
     let oldProps = n1.props || {}
     let newProps = n2.props || {}
-    // hostPatchprops只针对某一个属性来处理
-    patchProps(oldProps, newProps, el)
-    patchChildren(n1, n2, el, parentComponent)
+
+    const { patchFlag, dynamicChildren } = n2
+    if (patchFlag) {
+      if (patchFlag & PatchFlags.CLASS) {
+        // 1. 获取老的class
+        const oldClass = oldProps.class
+        // 2. 获取新的class
+        const newClass = newProps.class
+        // 3. 判断是否相同
+        if (oldClass !== newClass) {
+          // 4. 不相同则更新
+          return hostPatchProp(el, 'class', newClass, oldClass)
+        }
+      }
+      if (patchFlag & PatchFlags.STYLE) {
+        // 1. 获取老的style
+        const oldStyle = oldProps.style
+        // 2. 获取新的style
+        const newStyle = newProps.style
+        // 3. 判断是否相同
+        if (oldStyle !== newStyle) {
+          // 4. 不相同则更新
+          return hostPatchProp(el, 'style', newStyle, oldStyle)
+        }
+      }
+      if (patchFlag & PatchFlags.PROPS) {
+        for (const key in newProps) {
+          if (key === 'class' || key === 'style') continue
+          const prev = oldProps[key]
+          const next = newProps[key]
+          if (prev !== next) {
+            return hostPatchProp(el, key, next, prev)
+          }
+        }
+        // 清理旧的属性
+        for (const key in oldProps) {
+          if (key === 'class' || key === 'style') continue
+          if (!(key in newProps)) {
+            return hostPatchProp(el, key, null, oldProps[key])
+          }
+        }
+      }
+      if (patchFlag & PatchFlags.TEXT) {
+        if (n1.children !== n2.children) {
+          return hostSetElementText(el, n2.children)
+        }
+      }
+    } else {
+      // hostPatchprops只针对某一个属性来处理
+      patchProps(oldProps, newProps, el)
+    }
+
+    if (dynamicChildren) {
+      // 线性比对
+      patchBlockChildren(n1, n2, el, anchor, parentComponent)
+    } else {
+      // 全量diff算法
+      patchChildren(n1, n2, el, anchor, parentComponent)
+    }
   }
 
   const processText = (n1, n2, container) => {
@@ -244,11 +309,11 @@ export function createRenderer(rendererOptions) {
     }
   }
 
-  const processFragment = (n1, n2, container, parentComponent) => {
+  const processFragment = (n1, n2, container, anchor, parentComponent) => {
     if (n1 == null) {
-      mountChildren(n2.children, container, parentComponent)
+      mountChildren(n2.children, container, anchor, parentComponent)
     } else {
-      patchChildren(n1, n2, container, parentComponent)
+      patchChildren(n1, n2, container, anchor, parentComponent)
     }
   }
 
@@ -408,7 +473,7 @@ export function createRenderer(rendererOptions) {
         processText(n1, n2, container)
         break
       case Fragment:
-        processFragment(n1, n2, container, parentComponent)
+        processFragment(n1, n2, container, anchor, parentComponent)
         break
       default:
         if (shapeFlag & ShapeFlags.ELEMENT) { // 元素
