@@ -1,146 +1,118 @@
 // 编译分三步 1、需要将模板转化成ast语法树；2、转化 生成codegennode；3、转化成render函数
 // 将模板转化成ast语法树
+import { NodeTypes } from './ast'
+import { parse } from './parser'
+import { CREATE_ELEMENT_BLOCK, CREATE_ELEMENT_VNODE, helperNameMap, OPEN_BLOCK, TO_DISPLAY_STRING } from './runtimeHelpers'
+import { transform } from './transform'
 
-import { NodeTypes } from "./ast"
-
-
-function createParserContext(template) {
-  return {
-    originalSource: template,
-    source: template,
-    line: 1,
-    column: 1,
-    offset: 0,
-  }
-}
-
-function isEnd(context) {
-  const c = context.source
-  if (c.startsWith('</')) { // 如果是闭合标签，也要停止循环
-    return true
-  }
-  return !c
-}
-
-function advancePosition(context, content, endIndex) {
-  let linesCount = 0
-  let lastNewLinePos = -1
-  for (let i = 0; i < endIndex; i++) {
-    if (content.charCodeAt(i) === 10) {
-      linesCount++
-      lastNewLinePos = i
+function createCodegenContext(ast) {
+  const context = {
+    code: '',
+    level: 0,
+    helper(name) {
+      return '_' + helperNameMap[name]
+    },
+    push(code) {
+      context.code += code
+    },
+    indent() {
+      newLine(++context.level)
+    },
+    dedent(noNewLine = false) {
+      if (noNewLine) {
+        --context.level
+      } else {
+        newLine(--context.level)
+      }
+    },
+    newLine() {
+      newLine(context.level)
     }
   }
-  context.offset += endIndex
-  context.line += linesCount
-  context.column = lastNewLinePos === -1
-    ? context.column + endIndex
-    : endIndex - lastNewLinePos
+  function newLine(n) {
+    context.push('\n' + `  `.repeat(n))
+  }
+  return context
 }
 
-function advanceBy(context, endIndex) {
-  let c = context.source
-  advancePosition(context, c, endIndex)
-  context.source = c.slice(endIndex)
+function genFunctionPreamble(ast, context) {
+  const { push, newLine } = context
+  if (ast.helpers.length > 0) {
+    push(`const {${ast.helpers.map((item) => `${helperNameMap[item]}:${context.helper[item]}`)}} = Vue`)
+    newLine()
+  }
+  push(`return function render(_ctx) {`)
 }
 
-function getCursor(context) {
-  return {
-    line: context.line,
-    column: context.column,
-    offset: context.offset
+function genText(node, context) {
+  context.push(JSON.stringify(node.content))
+}
+
+function genInterpolation(node, context) {
+  const { push, helper } = context
+  push(`${helper(TO_DISPLAY_STRING)}(`)
+  genNode(node.content, context)
+  push(`)`)
+}
+
+function genExpression(node, context) {
+  context.push(node.content)
+}
+
+function genVNodeCall(node, context) {
+  const { push, helper, indent } = context
+  const { tag, props, children, isBlock } = node
+  if (isBlock) {
+    push(`(${helper(OPEN_BLOCK)}(),`)
+  }
+  const h = isBlock ? helper(CREATE_ELEMENT_BLOCK) : helper(CREATE_ELEMENT_VNODE)
+  push(`${helper(h)}(`)
+  if (node.isBlock) {
+    push(`)`)
+  }
+  indent()
+  push(`)`)
+}
+
+function genNode(node, context) {
+  const { push, helper, newLine, indent, dedent } = context
+  switch (node.type) {
+    case NodeTypes.TEXT:
+      genText(node, context)
+      break
+    case NodeTypes.INTERPOLATION:
+      genInterpolation(node, context)
+      break
+    case NodeTypes.SIMPLE_EXPRESSION:
+      genExpression(node, context)
+      break
+    case NodeTypes.VNODE_CALL:
+      genVNodeCall(node, context)
+      break
   }
 }
 
-function getSelection(context, start) {
-  const end = getCursor(context)
-  return {
-    start,
-    end,
-    source: context.originalSource.slice(start.offset, end.offset)
+function generate(ast) {
+  const context = createCodegenContext(ast)
+  const { push, indent, dedent } = context
+  indent()
+  push(`return `)
+  if (ast.codegenNode) {
+    genNode(ast.codegenNode, context)
+  } else {
+    push("null")
   }
+  dedent()
+  push(`}`)
+
+  genFunctionPreamble(ast, context)
+  return context.code
 }
 
-function parseTextData(context, endIndex) {
-  const content = context.source.slice(0, endIndex)
-  advanceBy(context, endIndex)
-  return content
+export function compile(template) {
+  const ast = parse(template)
+  transform(ast)
+  return generate(ast)
 }
 
-function parseText(context) {
-  let tokens = ['<', '{{'] // 找当前离得最近的词法
-  let endIndex = context.source.length
-  for (let i = 0; i < tokens.length; i++) {
-    const index = context.source.indexOf(tokens[i], 1)
-    if (index !== -1 && index < endIndex) {
-      endIndex = index
-    }
-  }
-  let content = parseTextData(context, endIndex)
-  return { type: NodeTypes.TEXT, content }
-}
-
-function advanceSpaces(context) {
-  let match = /^[ \t\r\n]+/.exec(context.source)
-  if (match) {
-    advanceBy(context, match[0].length)
-  }
-}
-
-function parseTag(context) {
-  const start = getCursor(context)
-  const match = /^<\/?([a-z][^\t\r\n/>]*)/.exec(context.source)
-  const tag = match[1]
-  advanceBy(context, match[0].length) // 删除匹配到的内容
-  advanceSpaces(context)
-  const isSelfClosing = context.source.startsWith('/>')
-  advanceBy(context, isSelfClosing ? 2 : 1)
-  return {
-    type: NodeTypes.ELEMENT,
-    tag,
-    isSelfClosing,
-    loc: getSelection(context, start),
-  }
-}
-
-function parseElement(context) {
-  const ele = parseTag(context)
-  const children = parseChildren(context) // 递归解析子元素
-  if (context.source.startsWith('</')) {
-    parseTag(context)
-  }
-  (ele as any).children = [];
-  (ele as any).loc = getSelection(context, ele.loc.start)
-  return ele
-}
-
-function parseChildren(context) {
-  const nodes = [] as any
-  while (!isEnd(context)) {
-    const c = context.source // 解析的内容  
-    let node
-    if (c.startsWith('{{')) { // 插值
-      node = '表达式'
-    } else if (c[0] === '<') { // 标签
-      node = parseElement(context)
-    } else { // 文本
-      node = parseText(context)
-    }
-
-    // 状态机
-    nodes.push(node)
-  }
-  return nodes
-}
-
-function createRoot(children) {
-  return {
-    type: NodeTypes.ROOT,
-    children,
-  }
-}
-
-export function parse(template) {
-  const context = createParserContext(template)
-  return createRoot(parseChildren(context))
-}
+export { parse }

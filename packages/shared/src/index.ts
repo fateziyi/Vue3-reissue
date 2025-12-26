@@ -14,3 +14,5 @@ export * from './shapeFlags'
 
 const hasOwnProperty = Object.prototype.hasOwnProperty
 export const hasOwn = (val, key) => hasOwnProperty.call(val, key)
+
+export * from './patchFlags'
