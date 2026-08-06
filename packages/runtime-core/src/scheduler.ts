@@ -1,21 +1,47 @@
-const queue = [] // 缓存当前要执行的队列
-let isFlushing = false
-const resolvePromise = Promise.resolve()
+export interface SchedulerJob {
+  (): void
+  id?: number
+}
 
-// 如果同时在一个组件中更新多个状态，job肯定是同一个
-// 同时开启一个异步任务
-export function queueJob(job) {
-  if (!queue.includes(job)) { // 避免重复入队列
-    queue.push(job) // 让任务入队列
+const queue: SchedulerJob[] = []
+const resolvedPromise = Promise.resolve()
+let flushIndex = 0
+let isFlushing = false
+let isFlushPending = false
+let currentFlushPromise: Promise<void> | null = null
+
+const getId = (job: SchedulerJob) => job.id ?? Number.POSITIVE_INFINITY
+
+function queueFlush() {
+  if (isFlushing || isFlushPending) return
+  isFlushPending = true
+  currentFlushPromise = resolvedPromise.then(flushJobs)
+}
+
+function flushJobs() {
+  isFlushPending = false
+  isFlushing = true
+  queue.sort((a, b) => getId(a) - getId(b))
+
+  try {
+    for (flushIndex = 0; flushIndex < queue.length; flushIndex++) {
+      queue[flushIndex]?.()
+    }
+  } finally {
+    flushIndex = 0
+    queue.length = 0
+    isFlushing = false
+    currentFlushPromise = null
   }
-  if (!isFlushing) {
-    isFlushing = true
-    resolvePromise.then(() => {
-      isFlushing = false
-      const copy = queue.slice(0) // 先拷贝，再执行
-      queue.length = 0
-      copy.forEach(job => job())
-      copy.length = 0
-    })
-  }
+}
+
+export function queueJob(job: SchedulerJob) {
+  const searchFrom = isFlushing ? flushIndex + 1 : flushIndex
+  if (!queue.includes(job, searchFrom)) queue.push(job)
+  queueFlush()
+}
+
+export function nextTick<T = void>(fn?: () => T) {
+  const promise = currentFlushPromise || resolvedPromise
+  return fn ? promise.then(fn) : promise
 }

@@ -1,5 +1,6 @@
 {
   "name": "@vue/compiler-core",
+  "type": "module",
   "version": "1.0.0",
   "module": "dist/compiler-core.esm-bundler.js",
   "unpkg": "dist/compiler-core.global.js",

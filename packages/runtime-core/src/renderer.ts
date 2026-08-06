@@ -6,7 +6,7 @@ import { queueJob } from "./scheduler"
 import { createComponentInstance, setupComponent } from "./component"
 import { invokeArray } from "./apiLifeCycle"
 import { isKeepAlive } from "./components/KeepAlive"
-import { PatchFlags } from "packages/shared/src/patchFlags"
+import { PatchFlags } from '@vue/shared'
 
 export function createRenderer(rendererOptions) {
   // core中不关心如何渲染
@@ -89,9 +89,8 @@ export function createRenderer(rendererOptions) {
     }
   }
 
-  // 全量diff（递归diff）
-  const patchKeyedChildren = (c1, c2, el, parentComponent) => { // 比较两个儿子的差异，来更新el
-    // 先从头比对，再从尾比对，减少比对范围，如果有多余直接新增即可 
+  // 双端预处理收窄乱序区间，再用 key 映射和 LIS 减少 DOM 移动。
+  const patchKeyedChildren = (c1, c2, el, parentComponent) => {
     let i = 0 // 开始比对的索引 
     let e1 = c1.length - 1 // 旧的最后一个索引
     let e2 = c2.length - 1 // 新的最后一个索引
@@ -101,7 +100,7 @@ export function createRenderer(rendererOptions) {
       const n2 = c2[i]
       if (isSameVnode(n1, n2)) {
         // 相同节点，递归对比更新
-        patch(n1, n2, el)
+        patch(n1, n2, el, null, parentComponent)
       } else {
         break
       }
@@ -112,7 +111,7 @@ export function createRenderer(rendererOptions) {
       const n2 = c2[e2]
       if (isSameVnode(n1, n2)) {
         // 相同节点，递归对比更新
-        patch(n1, n2, el)
+        patch(n1, n2, el, null, parentComponent)
       } else {
         break
       }
@@ -122,10 +121,10 @@ export function createRenderer(rendererOptions) {
     // 特殊情况的处理
     if (i > e1) { // 新的多
       if (i <= e2) { // 有插入的部分
-        let nextPos = e2 + 1 // 检查下一个元素是否存在
-        let anchor = c2[nextPos]?.el
+        const nextPos = e2 + 1
+        const anchor = nextPos < c2.length ? c2[nextPos].el : null
         while (i <= e2) {
-          patch(null, c2[i], el, anchor) // 创建新的DOM元素
+          patch(null, c2[i], el, anchor, parentComponent)
           i++
         }
       }
@@ -139,45 +138,55 @@ export function createRenderer(rendererOptions) {
     } else {
       let s1 = i
       let s2 = i
-      const keyToNewIndexMap = new Map() // 做一个映射表用于快速查找，看老的是否在新的里面还有，没有就删除，有的话就更新
-      // 插入元素过程中可能新的元素多，需要创建
-      let toBePatched = e2 - s2 + 1 // 需要倒序插入的个数
-      let newIndexToOldIndexMap = new Array(toBePatched).fill(0)
-      // 根据最长递增子序列求出对应的索引结果
-      // 根据新的节点，找到对应老的位置
-      for (let i = s2; i <= e2; i++) {
-        const vnode = c2[i]
-        keyToNewIndexMap.set(vnode.key, i)
+      const keyToNewIndexMap = new Map()
+      const toBePatched = e2 - s2 + 1
+      const newIndexToOldIndexMap = new Array(toBePatched).fill(0)
+      let patched = 0
+      let maxNewIndexSoFar = 0
+      let moved = false
+
+      for (let index = s2; index <= e2; index++) {
+        const vnode = c2[index]
+        if (vnode.key != null) keyToNewIndexMap.set(vnode.key, index)
       }
-      for (let i = s1; i <= e1; i++) {
-        const vnode = c1[i]
-        const newIndex = keyToNewIndexMap.get(vnode.key)
+      for (let oldIndex = s1; oldIndex <= e1; oldIndex++) {
+        const vnode = c1[oldIndex]
+        if (patched >= toBePatched) {
+          unmount(vnode, parentComponent)
+          continue
+        }
+        let newIndex = vnode.key != null ? keyToNewIndexMap.get(vnode.key) : undefined
+        if (newIndex === undefined && vnode.key == null) {
+          for (let index = s2; index <= e2; index++) {
+            if (newIndexToOldIndexMap[index - s2] === 0 && isSameVnode(vnode, c2[index])) {
+              newIndex = index
+              break
+            }
+          }
+        }
         if (newIndex === undefined) {
-          // 说明老的节点在新的节点中没有，需要删除
           unmount(vnode, parentComponent)
         } else {
-          // 说明老的节点在新的节点中还有，需要更新
-          // i可能有0的情况
-          newIndexToOldIndexMap[newIndex - s2] = i + 1
-          patch(vnode, c2[newIndex], el)
+          newIndexToOldIndexMap[newIndex - s2] = oldIndex + 1
+          if (newIndex >= maxNewIndexSoFar) maxNewIndexSoFar = newIndex
+          else moved = true
+          patch(vnode, c2[newIndex], el, null, parentComponent)
+          patched++
         }
       }
-      let increasingSeq = getSequence(newIndexToOldIndexMap)
-      let j = increasingSeq.length - 1 // 索引
-      // 调整顺序
-      for (let i = toBePatched - 1; i >= 0; i--) {
-        let newIndex = s2 + i // 下一个元素作为参照物进行插入
-        let anchor = c2[newIndex + 1]?.el
-        let vnode = c2[newIndex]
-        if (!vnode.el) { // 新增的元素
-          // 新增的元素，需要插入到参照物的前面
-          patch(null, vnode, el, anchor) // 创建h插入
-        } else {
-          if (i == increasingSeq[j]) {
-            j-- // diff算法的优化
+      const increasingSeq = moved ? getSequence(newIndexToOldIndexMap) : []
+      let sequenceIndex = increasingSeq.length - 1
+      for (let index = toBePatched - 1; index >= 0; index--) {
+        const newIndex = s2 + index
+        const vnode = c2[newIndex]
+        const anchor = newIndex + 1 < c2.length ? c2[newIndex + 1].el : null
+        if (newIndexToOldIndexMap[index] === 0) {
+          patch(null, vnode, el, anchor, parentComponent)
+        } else if (moved) {
+          if (sequenceIndex < 0 || index !== increasingSeq[sequenceIndex]) {
+            hostInsert(vnode.el, el, anchor)
           } else {
-            // 说明是移动操作，需要移动到参照物的前面
-            hostInsert(vnode.el, el, anchor) // 倒序插入
+            sequenceIndex--
           }
         }
       }
@@ -244,7 +253,7 @@ export function createRenderer(rendererOptions) {
         // 3. 判断是否相同
         if (oldClass !== newClass) {
           // 4. 不相同则更新
-          return hostPatchProp(el, 'class', newClass, oldClass)
+          hostPatchProp(el, 'class', oldClass, newClass)
         }
       }
       if (patchFlag & PatchFlags.STYLE) {
@@ -255,7 +264,7 @@ export function createRenderer(rendererOptions) {
         // 3. 判断是否相同
         if (oldStyle !== newStyle) {
           // 4. 不相同则更新
-          return hostPatchProp(el, 'style', newStyle, oldStyle)
+          hostPatchProp(el, 'style', oldStyle, newStyle)
         }
       }
       if (patchFlag & PatchFlags.PROPS) {
@@ -264,20 +273,20 @@ export function createRenderer(rendererOptions) {
           const prev = oldProps[key]
           const next = newProps[key]
           if (prev !== next) {
-            return hostPatchProp(el, key, next, prev)
+            hostPatchProp(el, key, prev, next)
           }
         }
         // 清理旧的属性
         for (const key in oldProps) {
           if (key === 'class' || key === 'style') continue
           if (!(key in newProps)) {
-            return hostPatchProp(el, key, null, oldProps[key])
+            hostPatchProp(el, key, oldProps[key], null)
           }
         }
       }
       if (patchFlag & PatchFlags.TEXT) {
         if (n1.children !== n2.children) {
-          return hostSetElementText(el, n2.children)
+          hostSetElementText(el, n2.children)
         }
       }
     } else {
@@ -373,7 +382,9 @@ export function createRenderer(rendererOptions) {
     }
 
     const effect = new ReactiveEffect(componentUpdateFn, () => queueJob(update))
-    const update = (instance.update = () => effect.run())
+    const update = (instance.update = () => {
+      if (effect.dirty) effect.run()
+    })
     update()
   }
 

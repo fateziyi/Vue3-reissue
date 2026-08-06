@@ -1,28 +1,16 @@
-import { PatchFlags } from '@vue/shared'
-import { createCallExpression, createObjectExpression, createVnodeCall, NodeTypes } from './ast'
-import { CREATE_ELEMENT_BLOCK, CREATE_ELEMENT_VNODE, FRAGMENT, OPEN_BLOCK, TO_DISPLAY_STRING } from './runtimeHelpers'
+import {
+  createObjectExpression,
+  createSimpleExpression,
+  createVnodeCall,
+  NodeTypes,
+} from './ast'
+import { FRAGMENT, TO_DISPLAY_STRING } from './runtimeHelpers'
 
-function transformElement(node, context) {
-  if (node.type === NodeTypes.ELEMENT) {
-    return function () {
-      let { tag, props, children } = node
-      let vnodeTag = tag
-      let properties = []
-      for (let i = 0; i < props.length; i++) {
-        let prop = props[i]
-        properties.push({ name: prop.name, value: prop.value.content })
-      }
-      const propsExpression = properties.length > 0
-        ? createObjectExpression(properties)
-        : null
-      let vnodeChildren = null
-      if (children.length === 1) {
-        vnodeChildren = children[0]
-      } else if (children.length > 1) {
-        vnodeChildren = children
-      }
-      node.codegenNode = createVnodeCall(context, vnodeTag, propsExpression, vnodeChildren)
-    }
+export type NodeTransform = (node: any, context: any) => void | (() => void)
+
+function transformExpression(node) {
+  if (node.type === NodeTypes.INTERPOLATION) {
+    node.content.content = `_ctx.${node.content.content}`
   }
 }
 
@@ -30,151 +18,123 @@ function isText(node) {
   return node.type === NodeTypes.TEXT || node.type === NodeTypes.INTERPOLATION
 }
 
-function transformText(node, context) {
-  if (node.type === NodeTypes.ELEMENT || node.type === NodeTypes.ROOT) {
-    return function () {
-      const children = node.children
-      let container = null
-      let hasText = false
-      for (let i = 0; i < children.length; i++) {
-        let child = children[i]
-        if (isText(child)) {
-          hasText = true
-          for (let j = i + 1; j < children.length; j++) {
-            const next = children[j]
-            if (isText(next)) {
-              if (!container) {
-                container = children[i] = {
-                  type: NodeTypes.COMPOUND_EXPRESSION,
-                  children: [child]
-                }
-              }
-              container.children.push(`+`, next)
-              children.splice(j, 1)
-              j--
-            } else {
-              container = null
-              break
-            }
+function transformText(node) {
+  if (node.type !== NodeTypes.ELEMENT && node.type !== NodeTypes.ROOT) return
+  return () => {
+    const children = node.children
+    let container
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index]
+      if (!isText(child)) continue
+      for (let nextIndex = index + 1; nextIndex < children.length; nextIndex++) {
+        const next = children[nextIndex]
+        if (!isText(next)) break
+        if (!container) {
+          container = children[index] = {
+            type: NodeTypes.COMPOUND_EXPRESSION,
+            children: [child],
           }
         }
+        container.children.push(' + ', next)
+        children.splice(nextIndex, 1)
+        nextIndex--
       }
-      if (!hasText || children.length === 1) {
-        return
-      }
-      for (let i = 0; i < children.length; i++) {
-        let child = children[i]
-        if (isText(child) || child.type === NodeTypes.COMPOUND_EXPRESSION) {
-          const args = []
-          args.push(child)
-          if (child.type === NodeTypes.TEXT) {
-            args.push(PatchFlags.TEXT)
-          }
-          children[i] = {
-            type: NodeTypes.TEXT_CALL,
-            content: child,
-            codegenNode: createCallExpression(context, args),
-          }
-        }
-      }
+      container = undefined
     }
   }
 }
 
-function transformExpression(node, context) {
-  if (node.type === NodeTypes.INTERPOLATION) {
-    node.content.content = `_ctx.${node.content.content}`
+function transformElement(node, context) {
+  if (node.type !== NodeTypes.ELEMENT) return
+  return () => {
+    const properties = node.props.map((prop) => ({
+      name: prop.name,
+      value: createSimpleExpression(prop.value?.content ?? true, true),
+    }))
+    const props = properties.length ? createObjectExpression(properties) : null
+    const children =
+      node.children.length === 0
+        ? null
+        : node.children.length === 1
+          ? node.children[0]
+          : node.children
+    node.codegenNode = createVnodeCall(
+      context,
+      createSimpleExpression(node.tag, true),
+      props,
+      children
+    )
   }
 }
 
-function createTransformContext(root) {
-  const context = {
+function createTransformContext(root, options: { nodeTransforms?: NodeTransform[] }) {
+  const context: any = {
+    root,
     currentNode: root,
     parent: null,
-    transformNode: [
-      transformElement,
-      transformText,
-      transformExpression
-    ],
+    childIndex: 0,
+    nodeTransforms: [transformExpression, transformElement, transformText, ...(options.nodeTransforms || [])],
     helpers: new Map(),
     helper(name) {
-      let count = context.helpers.get(name) || 0
-      context.helpers.set(name, count + 1)
+      context.helpers.set(name, (context.helpers.get(name) || 0) + 1)
       return name
     },
-    removeHelper(name) {
-      let count = context.helpers.get(name)
-      if (count) {
-        let c = count - 1
-        if (!c) {
-          context.helpers.delete(name)
-        } else {
-          context.helpers.set(name, c)
-        }
-      }
-    }
+    replaceNode(node) {
+      context.parent.children[context.childIndex] = node
+      context.currentNode = node
+    },
+    removeNode() {
+      context.parent.children.splice(context.childIndex, 1)
+      context.currentNode = null
+    },
   }
   return context
 }
 
+function traverseChildren(parent, context) {
+  for (let index = 0; index < parent.children.length; index++) {
+    context.parent = parent
+    context.childIndex = index
+    traverseNode(parent.children[index], context)
+    if (!context.currentNode) index--
+  }
+}
+
 function traverseNode(node, context) {
   context.currentNode = node
-  const transforms = context.transformNode
-  const exits = []
-  for (let i = 0; i < transforms.length; i++) {
-    let exit = transforms[i](node, context)
-    exit && exits.push(exit)
+  const exits: Array<() => void> = []
+  for (const transform of context.nodeTransforms) {
+    const onExit = transform(context.currentNode, context)
+    if (onExit) exits.push(onExit)
+    if (!context.currentNode) return
   }
-  switch (node.type) {
-    case NodeTypes.ROOT:
-    case NodeTypes.ELEMENT:
-      for (let i = 0; i < node.children.length; i++) {
-        context.parent = node
-        traverseNode(node.children[i], context)
-      }
-      break
-    // 对表达式的处理
-    case NodeTypes.INTERPOLATION:
-      context.helper(TO_DISPLAY_STRING)
-      break
+
+  node = context.currentNode
+  if (node.type === NodeTypes.INTERPOLATION) {
+    context.helper(TO_DISPLAY_STRING)
+  } else if (node.type === NodeTypes.ROOT || node.type === NodeTypes.ELEMENT) {
+    traverseChildren(node, context)
   }
+
+  let index = exits.length
+  while (index--) exits[index]()
   context.currentNode = node
-  let i = exits.length
-  if (i > 0) {
-    while (i--) {
-      exits[i]()
-    }
-  }
 }
 
 function createRootCodegenNode(ast, context) {
-  let { children } = ast
+  const { children } = ast
   if (children.length === 1) {
     const child = children[0]
-    if (child.type === NodeTypes.ELEMENT) {
-      ast.codegenNode = child.codegenNode
-      context.removeHelper(CREATE_ELEMENT_VNODE)
-      context.helper(CREATE_ELEMENT_BLOCK)
-      context.helper(OPEN_BLOCK)
-      ast.codegenNode.isBlock = true
-    } else {
-      ast.codegenNode = child
-    }
-  } else if (children.length > 0) {
-    ast.codegenNode = createVnodeCall(context, context.helper(FRAGMENT), undefined, children)
-    context.helper(CREATE_ELEMENT_BLOCK)
-    context.helper(OPEN_BLOCK)
-    ast.codegenNode.isBlock = true
+    ast.codegenNode = child.codegenNode || child
+  } else if (children.length > 1) {
+    ast.codegenNode = createVnodeCall(context, FRAGMENT, null, children)
   }
 }
 
-function transform(ast) {
-  const context = createTransformContext(ast)
+export function transform(ast, options: { nodeTransforms?: NodeTransform[] } = {}) {
+  const context = createTransformContext(ast, options)
   traverseNode(ast, context)
   createRootCodegenNode(ast, context)
-  // 对根节点处理 1. 文本 2.一个元素 3.多个元素
   ast.helpers = [...context.helpers.keys()]
+  return ast
 }
-
-export { transform }
-

@@ -2,10 +2,11 @@ import { activeEffect, trackEffects, triggerEffects } from "./effect";
 
 const targetMap = new WeakMap() // 存放依赖收集的关系
 
-export const createDep = (cleanup, key) => {
+export const createDep = (cleanup, key, computed?) => {
   const dep = new Map() as any // 创建的收集器还是一个Map
   dep.cleanup = cleanup // 清理方法
   dep.name = key // 自定义的，为了标识这个映射表是给哪个属性服务的
+  dep.computed = computed
   return dep
 }
 export function track(target, key) {

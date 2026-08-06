@@ -2,7 +2,7 @@
   "compilerOptions": {
     "outDir": "dist", // 输出目录
     "sourceMap": true, // 生成sourceMap
-    "target": "es2016", // 编译目标
+    "target": "es2020", // 支持现代浏览器与构建脚本的顶层 await
     "module": "esnext", // 模块格式
     "moduleResolution": "node", // 模块解析策略
     "strict": false, // 严格模式

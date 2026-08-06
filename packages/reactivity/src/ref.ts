@@ -24,7 +24,7 @@ class RefImpl {
   set value(newValue) {
     if (newValue !== this.rawValue) {
       this.rawValue = newValue // 更新值
-      this._value = newValue // 更新值
+      this._value = toReactive(newValue) // 保持对象值的深层响应式
       triggerRefValue(this)
     }
   }
@@ -34,15 +34,16 @@ export function trackRefValue(ref) {
   if (activeEffect) { // 如果有effect，则进行依赖收集
     trackEffects(
       activeEffect,
-      (ref.dep = ref.dep || createDep(() => ref.dep = undefined, 'undefined'))
+      (ref.dep =
+        ref.dep || createDep(() => (ref.dep = undefined), 'value', ref))
     )
   }
 }
 
-export function triggerRefValue(ref) {
+export function triggerRefValue(ref, dirtyLevel?) {
   let dep = ref.dep
   if (dep) {
-    triggerEffects(dep) // 触发依赖更新
+    triggerEffects(dep, dirtyLevel) // 触发依赖更新
   }
 }
 
@@ -75,11 +76,11 @@ export function proxyRefs(objectWithRef) {
   return new Proxy(objectWithRef, {
     get(target, key, receiver) {
       let r = Reflect.get(target, key, receiver)
-      return r.__v_isRef ? r.value : r // 如果是ref则返回ref.value
+      return r?.__v_isRef ? r.value : r // 如果是ref则返回ref.value
     },
     set(target, key, value, receiver) {
       const oldValue = target[key]
-      if (oldValue.__v_isRef) { // 如果是ref则设置ref.value
+      if (oldValue?.__v_isRef && !value?.__v_isRef) { // 如果是ref则设置ref.value
         oldValue.value = value
         return true
       } else { // 否则直接设置

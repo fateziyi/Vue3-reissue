@@ -1,7 +1,6 @@
-import { NodeTypes } from "./ast"
+import { NodeTypes } from './ast'
 
-
-function createParserContext(template) {
+function createParserContext(template: string) {
   return {
     originalSource: template,
     source: template,
@@ -11,41 +10,11 @@ function createParserContext(template) {
   }
 }
 
-function isEnd(context) {
-  const c = context.source
-  if (c.startsWith('</')) { // 如果是闭合标签，也要停止循环
-    return true
-  }
-  return !c
-}
-
-function advancePosition(context, content, endIndex) {
-  let linesCount = 0
-  let lastNewLinePos = -1
-  for (let i = 0; i < endIndex; i++) {
-    if (content.charCodeAt(i) === 10) {
-      linesCount++
-      lastNewLinePos = i
-    }
-  }
-  context.offset += endIndex
-  context.line += linesCount
-  context.column = lastNewLinePos === -1
-    ? context.column + endIndex
-    : endIndex - lastNewLinePos
-}
-
-function advanceBy(context, endIndex) {
-  let c = context.source
-  advancePosition(context, c, endIndex)
-  context.source = c.slice(endIndex)
-}
-
 function getCursor(context) {
   return {
     line: context.line,
     column: context.column,
-    offset: context.offset
+    offset: context.offset,
   }
 }
 
@@ -54,154 +23,199 @@ function getSelection(context, start) {
   return {
     start,
     end,
-    source: context.originalSource.slice(start.offset, end.offset)
+    source: context.originalSource.slice(start.offset, end.offset),
   }
 }
 
-function parseTextData(context, endIndex) {
-  const content = context.source.slice(0, endIndex)
-  advanceBy(context, endIndex)
+function advanceBy(context, length: number) {
+  const source = context.source
+  let lineCount = 0
+  let lastNewLine = -1
+  for (let index = 0; index < length; index++) {
+    if (source.charCodeAt(index) === 10) {
+      lineCount++
+      lastNewLine = index
+    }
+  }
+  context.offset += length
+  context.line += lineCount
+  context.column = lastNewLine < 0 ? context.column + length : length - lastNewLine
+  context.source = source.slice(length)
+}
+
+function advanceSpaces(context) {
+  const match = /^[\t\r\n\f ]+/.exec(context.source)
+  if (match) advanceBy(context, match[0].length)
+}
+
+function parseTextData(context, length: number) {
+  const content = context.source.slice(0, length)
+  advanceBy(context, length)
   return content
 }
 
 function parseText(context) {
-  let tokens = ['<', '{{'] // 找当前离得最近的词法
-  let endIndex = context.source.length
-  for (let i = 0; i < tokens.length; i++) {
-    const index = context.source.indexOf(tokens[i], 1)
-    if (index !== -1 && index < endIndex) {
-      endIndex = index
-    }
-  }
-  let content = parseTextData(context, endIndex)
-  return { type: NodeTypes.TEXT, content }
-}
-
-function advanceSpaces(context) {
-  let match = /^[ \t\r\n]+/.exec(context.source)
-  if (match) {
-    advanceBy(context, match[0].length)
-  }
-}
-
-function parseAttributeValue(context) {
-  let quote = context.source[0]
-  const isQuoted = quote === '"' || quote === "'"
-  let content
-  if (isQuoted) {
-    advanceBy(context, 1)
-    const endIndex = context.source.indexOf(quote, 1)
-    content = parseTextData(context, endIndex)
-    advanceBy(context, 1)
-  } else {
-    content = context.source.match(/([^ \t\r\n/>])+/)[1]
-    advanceBy(context, content.length)
-    advanceSpaces(context)
-  }
-  return content
-}
-
-function parseAttribute(context) {
   const start = getCursor(context)
-  let match = /^[^\t\r\n\f />][^\t\r\n\f />=]*/.exec(context.source)
-  const name = match[0]
-  let value
-  advanceBy(context, name.length)
-  if (/^[\t\r\n\f ]*=/.test(context.source)) {
-    advanceSpaces(context)
-    advanceBy(context, 1)
-    advanceSpaces(context)
-    value = parseAttributeValue(context)
+  let endIndex = context.source.length
+  for (const token of ['<', '{{']) {
+    const index = context.source.indexOf(token)
+    if (index >= 0 && index < endIndex) endIndex = index
   }
-  let loc = getSelection(context, start)
+  if (endIndex === 0) endIndex = 1
+  const content = parseTextData(context, endIndex)
+  return { type: NodeTypes.TEXT, content, loc: getSelection(context, start) }
+}
+
+function parseInterpolation(context) {
+  const start = getCursor(context)
+  advanceBy(context, 2)
+  const closeIndex = context.source.indexOf('}}')
+  if (closeIndex < 0) throw new Error('Interpolation is missing closing delimiter "}}"')
+  const rawContent = parseTextData(context, closeIndex)
+  const content = rawContent.trim()
+  advanceBy(context, 2)
   return {
-    type: NodeTypes.ATTRIBUTE,
-    name,
-    value: {
-      type: NodeTypes.TEXT,
-      content: value,
-      loc,
+    type: NodeTypes.INTERPOLATION,
+    content: {
+      type: NodeTypes.SIMPLE_EXPRESSION,
+      content,
     },
     loc: getSelection(context, start),
   }
 }
 
-function parseAttributes(context) {
-  const props = []
-  while (context.source.length > 0 && !context.source.startsWith('>')) {
-    props.push(parseAttribute(context))
-    advanceSpaces(context)
+function parseAttributeValue(context) {
+  const quote = context.source[0]
+  if (quote === '"' || quote === "'") {
+    advanceBy(context, 1)
+    const endIndex = context.source.indexOf(quote)
+    if (endIndex < 0) throw new Error('Attribute value is missing a closing quote')
+    const content = parseTextData(context, endIndex)
+    advanceBy(context, 1)
+    return content
   }
-  return props
+  const match = /^[^\t\r\n\f >]+/.exec(context.source)
+  if (!match) return ''
+  advanceBy(context, match[0].length)
+  return match[0]
 }
 
-function parseTag(context) {
+function parseAttribute(context) {
   const start = getCursor(context)
-  const match = /^<\/?([a-z][^\t\r\n/>]*)/.exec(context.source)
-  const tag = match[1]
-  advanceBy(context, match[0].length) // 删除匹配到的内容
+  const match = /^[^\t\r\n\f />=]+/.exec(context.source)
+  if (!match) throw new Error(`Invalid attribute near: ${context.source.slice(0, 10)}`)
+  const name = match[0]
+  advanceBy(context, name.length)
   advanceSpaces(context)
-  let props = parseAttributes(context)
+
+  let value: string | null = null
+  if (context.source.startsWith('=')) {
+    advanceBy(context, 1)
+    advanceSpaces(context)
+    value = parseAttributeValue(context)
+  }
+
+  return {
+    type: NodeTypes.ATTRIBUTE,
+    name,
+    value:
+      value == null
+        ? null
+        : { type: NodeTypes.TEXT, content: value },
+    loc: getSelection(context, start),
+  }
+}
+
+function parseTag(context, type: 'start' | 'end') {
+  const start = getCursor(context)
+  const match = /^<\/?([a-z][^\t\r\n\f />]*)/i.exec(context.source)
+  if (!match) throw new Error(`Invalid tag near: ${context.source.slice(0, 10)}`)
+  const tag = match[1]
+  advanceBy(context, match[0].length)
+  advanceSpaces(context)
+
+  const props: any[] = []
+  if (type === 'start') {
+    while (context.source.length && !context.source.startsWith('>') && !context.source.startsWith('/>')) {
+      props.push(parseAttribute(context))
+      advanceSpaces(context)
+    }
+  }
+
   const isSelfClosing = context.source.startsWith('/>')
   advanceBy(context, isSelfClosing ? 2 : 1)
   return {
     type: NodeTypes.ELEMENT,
     tag,
+    props,
+    children: [],
     isSelfClosing,
     loc: getSelection(context, start),
-    props,
   }
 }
 
-function parseElement(context) {
-  const ele = parseTag(context)
-  const children = parseChildren(context) // 递归解析子元素
-  if (context.source.startsWith('</')) {
-    parseTag(context)
-  }
-  (ele as any).children = [];
-  (ele as any).loc = getSelection(context, ele.loc.start)
-  return ele
+function startsWithEndTagOpen(source: string, tag: string) {
+  return (
+    source.startsWith('</') &&
+    source.slice(2, 2 + tag.length).toLowerCase() === tag.toLowerCase() &&
+    /[\t\r\n\f />]/.test(source[2 + tag.length] || '>')
+  )
 }
 
-function parseChildren(context) {
-  const nodes = [] as any
-  while (!isEnd(context)) {
-    const c = context.source // 解析的内容  
+function isEnd(context, ancestors: any[]) {
+  if (!context.source) return true
+  const parent = ancestors[ancestors.length - 1]
+  return Boolean(parent && startsWithEndTagOpen(context.source, parent.tag))
+}
+
+function parseElement(context, ancestors: any[]) {
+  const element = parseTag(context, 'start')
+  if (element.isSelfClosing) return element
+
+  ancestors.push(element)
+  element.children = parseChildren(context, ancestors)
+  ancestors.pop()
+
+  if (!startsWithEndTagOpen(context.source, element.tag)) {
+    throw new Error(`Missing end tag for <${element.tag}>`)
+  }
+  parseTag(context, 'end')
+  element.loc = getSelection(context, element.loc.start)
+  return element
+}
+
+function parseChildren(context, ancestors: any[]) {
+  const nodes: any[] = []
+  while (!isEnd(context, ancestors)) {
+    const source = context.source
     let node
-    if (c.startsWith('{{')) { // 插值
-      node = '表达式'
-    } else if (c[0] === '<') { // 标签
-      node = parseElement(context)
-    } else { // 文本
+    if (source.startsWith('{{')) {
+      node = parseInterpolation(context)
+    } else if (/^<[a-z]/i.test(source)) {
+      node = parseElement(context, ancestors)
+    } else {
       node = parseText(context)
     }
-    // 状态机
     nodes.push(node)
   }
-  for (let i = 0; i < nodes.length; i++) {
-    let node = nodes[i]
-    if (node.type === NodeTypes.TEXT) {
-      if (!/[^\t\r\n\f ]/.test(node.content)) {
-        nodes[i] = null
-      } else {
-        node.content = node.content.replace(/[\t\r\n\f ]+/g, ' ')
-      }
-    }
-  }
-  return nodes.filter(Boolean)
+
+  return nodes.filter((node) => {
+    if (node.type !== NodeTypes.TEXT) return true
+    node.content = node.content.replace(/[\t\r\n\f ]+/g, ' ')
+    return /[^\t\r\n\f ]/.test(node.content)
+  })
 }
 
 function createRoot(children) {
   return {
     type: NodeTypes.ROOT,
     children,
+    helpers: [],
+    codegenNode: null,
   }
 }
 
-function parse(template) {
+export function parse(template: string) {
   const context = createParserContext(template)
-  return createRoot(parseChildren(context))
+  return createRoot(parseChildren(context, []))
 }
-
-export { parse }

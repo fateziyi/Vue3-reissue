@@ -1,5 +1,6 @@
 {
   "name": "@vue/shared",
+  "type": "module",
   "version": "1.0.0",
   "module": "dist/shared.esm-bundler.js",
   "buildOptions": {

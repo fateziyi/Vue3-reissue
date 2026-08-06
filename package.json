@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx scripts/dev.ts compiler-core -f esm",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsx scripts/build.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "type-check": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

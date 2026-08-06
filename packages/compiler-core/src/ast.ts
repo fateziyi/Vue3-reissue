@@ -31,7 +31,7 @@ export enum NodeTypes {
 }
 
 export function createCallExpression(context, args) {
-  let name = context.helper(CREATE_TEXT_VNODE)
+  const name = context.helper(CREATE_TEXT_VNODE)
   return {
     type: NodeTypes.JS_CALL_EXPRESSION,
     arguments: args,
@@ -40,16 +40,23 @@ export function createCallExpression(context, args) {
 }
 
 export function createVnodeCall(context, tag, props, children) {
-  let name
-  if (tag !== FRAGMENT) {
-    name = context.helper(CREATE_ELEMENT_VNODE)
-  }
+  const name = context.helper(CREATE_ELEMENT_VNODE)
+  if (tag === FRAGMENT) context.helper(FRAGMENT)
   return {
     type: NodeTypes.VNODE_CALL,
     callee: name,
     tag,
     props,
-    children
+    children,
+    isBlock: false,
+  }
+}
+
+export function createSimpleExpression(content, isStatic = false) {
+  return {
+    type: NodeTypes.SIMPLE_EXPRESSION,
+    content,
+    isStatic,
   }
 }
 

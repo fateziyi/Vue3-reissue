@@ -27,6 +27,7 @@ function traverse(source, depth, currentDepth = 0, seen = new Set()) {
   if (seen.has(source)) {
     return source
   }
+  seen.add(source)
   for (let key in source) {
     traverse(source[key], depth, currentDepth, seen)
   }
@@ -78,8 +79,8 @@ function doWatch(source, cb, { deep, immediate }) {
     effect.run() // watchEffect
   }
   const unwatch = () => {
+    if (clean) clean()
     effect.stop()
   }
   return unwatch
 }
-

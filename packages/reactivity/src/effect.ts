@@ -1,22 +1,19 @@
-import { DirtyLevels } from "./constants"
+import { DirtyLevels } from './constants'
 
-export function effect(fn, options?) {
+export function effect<T>(fn: () => T, options: Record<string, unknown> = {}) {
   // 创建一个响应式effect，数据变化后可以重新执行
   // 创建一个effect，只要依赖的属性变化了就要执行回调
   const _effect = new ReactiveEffect(fn, () => {
-    // sheduler
-    _effect.run()
+    if (_effect.dirty) _effect.run()
   })
+  Object.assign(_effect, options)
   _effect.run()
-  if (options) {
-    Object.assign(_effect, options) // 用用户传递的覆盖掉内置的
-  }
   const runner = _effect.run.bind(_effect) // 绑定this，后续可以直接调用runner()
   runner.effect = _effect // 可以在run方法上获取到effect的引用
   return runner // 外界可以自己让其重新run
 }
 
-export let activeEffect
+export let activeEffect: ReactiveEffect | undefined
 
 function preCleanEffect(effect) {
   effect._depsLength = 0
@@ -32,20 +29,33 @@ function postCleanEffect(effect) {
   }
 }
 
-export class ReactiveEffect {
+export class ReactiveEffect<T = unknown> {
   _trackId = 0 // 用于记录当前effect执行了几次
   _depsLength = 0
   _running = 0
   _dirtyLevel = DirtyLevels.Dirty
-  deps = []
+  deps: any[] = []
 
   public active = true // 创建的effect是响应式的
   // fn:用户编写的函数
   // 如果fn中依赖的数据发生变化后，需要重新调用scheduler -> run()
-  constructor(public fn, public scheduler) { }
+  constructor(
+    public fn: () => T,
+    public scheduler?: () => void
+  ) {}
 
   public get dirty() {
-    return this._dirtyLevel === DirtyLevels.Dirty
+    if (this._dirtyLevel === DirtyLevels.MaybeDirty) {
+      this._dirtyLevel = DirtyLevels.QueryingDirty
+      for (const dep of this.deps) {
+        dep.computed?.value
+        if (this._dirtyLevel >= DirtyLevels.Dirty) break
+      }
+      if (this._dirtyLevel === DirtyLevels.QueryingDirty) {
+        this._dirtyLevel = DirtyLevels.NotDirty
+      }
+    }
+    return this._dirtyLevel >= DirtyLevels.Dirty
   }
 
   public set dirty(v) {
@@ -108,15 +118,15 @@ export function trackEffects(effect, dep) { // 一个个收集
   }
 }
 
-export function triggerEffects(dep) {
+export function triggerEffects(dep, dirtyLevel = DirtyLevels.Dirty) {
   for (const effect of dep.keys()) {
-    // 当前这个值是不脏的，但是触发更新需要将值变为脏值
-    if (effect._dirtyLevel < DirtyLevels.Dirty) {
-      effect._dirtyLevel = DirtyLevels.Dirty
+    const previousDirtyLevel = effect._dirtyLevel
+    if (effect._dirtyLevel < dirtyLevel) {
+      effect._dirtyLevel = dirtyLevel
     }
-    if (!effect._running) { // 如果不是正在执行，那么才会执行
+    if (previousDirtyLevel === DirtyLevels.NotDirty && !effect._running) {
       if (effect.scheduler) {
-        effect.scheduler() // -> effect.run()
+        effect.scheduler()
       }
     }
   }
